@@ -7,8 +7,6 @@ from backend import admin_link
 from backend import cn_market
 from backend import server
 
-
-# Prefer a stable Railway-provided token for remote API access.
 _original_node_token = admin_link.node_token
 
 
@@ -19,8 +17,6 @@ def _cloud_node_token() -> str:
 
 admin_link.node_token = _cloud_node_token
 
-
-# Health and read-only public A-share market-data endpoints are intentionally public.
 _original_guard_remote = server.AuditRequestHandler._guard_remote
 
 
@@ -30,14 +26,58 @@ def _cloud_guard_remote(self) -> bool:
         return True
     if path.startswith("/api/quote/") or path.startswith("/api/kline/") or path == "/api/quotes":
         return True
+    if path == "/api/grid/588000":
+        return True
     return _original_guard_remote(self)
 
 
 server.AuditRequestHandler._guard_remote = _cloud_guard_remote
 
-
-# Add simple market endpoints without changing the upstream paper-trading server module.
 _original_do_get = server.AuditRequestHandler.do_GET
+
+GRID_ACCOUNT_ID = "acct_588000_grid"
+GRID_SYMBOL = "588000.SH"
+
+
+def _live_grid_summary() -> dict:
+    """Return the 588000 paper account marked to the latest delayed A-share quote."""
+    quote = cn_market.get_quote("588000")
+    price = float(quote["price"])
+    trading = server.AuditRequestHandler.trading
+    account = trading.get_account(GRID_ACCOUNT_ID)
+    if not account:
+        raise ValueError(f"unknown account_id: {GRID_ACCOUNT_ID}")
+    positions = trading.list_positions(GRID_ACCOUNT_ID)
+    position = next((p for p in positions if p["symbol"] == GRID_SYMBOL), None)
+    quantity = int(position["quantity"]) if position else 0
+    avg_cost = float(position["avg_cost"]) if position else 0.0
+    market_value = round(quantity * price, 2)
+    unrealized_pnl = round(quantity * (price - avg_cost), 2)
+    unrealized_pct = round((price / avg_cost - 1) * 100, 2) if avg_cost else 0.0
+    cash = round(float(account["cash"]), 2)
+    total_equity = round(cash + market_value, 2)
+    total_pnl = round(total_equity - float(account["initial_cash"]), 2)
+    total_return_pct = round(total_pnl / float(account["initial_cash"]) * 100, 2)
+    return {
+        "accountId": GRID_ACCOUNT_ID,
+        "initialCash": float(account["initial_cash"]),
+        "cash": cash,
+        "position": {
+            "symbol": GRID_SYMBOL,
+            "name": quote.get("name"),
+            "quantity": quantity,
+            "avgCost": avg_cost,
+            "price": price,
+            "marketValue": market_value,
+            "unrealizedPnl": unrealized_pnl,
+            "unrealizedPct": unrealized_pct,
+        },
+        "totalEquity": total_equity,
+        "totalPnl": total_pnl,
+        "totalReturnPct": total_return_pct,
+        "quote": quote,
+        "mark": {"source": quote.get("source"), "retrievedAt": quote.get("retrievedAt")},
+    }
 
 
 def _cloud_do_get(self) -> None:
@@ -45,6 +85,9 @@ def _cloud_do_get(self) -> None:
     path = parsed.path
     query = {key: values[-1] for key, values in parse_qs(parsed.query).items()}
     try:
+        if path == "/api/grid/588000":
+            self._json(_live_grid_summary())
+            return
         if path.startswith("/api/quote/"):
             code = unquote(path.removeprefix("/api/quote/").strip("/"))
             self._json(cn_market.get_quote(code))
@@ -63,7 +106,7 @@ def _cloud_do_get(self) -> None:
         from http import HTTPStatus
         self._json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
         return
-    except Exception as exc:  # noqa: BLE001 - market providers can fail independently
+    except Exception as exc:
         from http import HTTPStatus
         self._json({"error": str(exc)}, HTTPStatus.BAD_GATEWAY)
         return
@@ -72,108 +115,46 @@ def _cloud_do_get(self) -> None:
 
 server.AuditRequestHandler.do_GET = _cloud_do_get
 
-GRID_ACCOUNT_ID = "acct_588000_grid"
-GRID_SYMBOL = "588000.SH"
-
 
 def _bootstrap_grid_account() -> None:
     trading = server.AuditRequestHandler.trading
     account = trading.get_account(GRID_ACCOUNT_ID)
     if not account:
-        account = trading.create_account(
-            {
-                "id": GRID_ACCOUNT_ID,
-                "name": "588000 Grid",
-                "owner": "588000-grid",
-                "initial_cash": 40000.0,
-                "currency": "CNY",
-                "market": "CN_A",
-                "commission_rate": 0.0003,
-                "min_commission": 0.0,
-                "stamp_duty_rate": 0.0,
-                "auto_reverse_repo_enabled": False,
-            }
-        )
-        print(f"Bootstrapped paper account {GRID_ACCOUNT_ID} with CNY 40000", flush=True)
-
-    trading.update_account(
-        GRID_ACCOUNT_ID,
-        {
+        trading.create_account({
+            "id": GRID_ACCOUNT_ID,
+            "name": "588000 Grid",
+            "owner": "588000-grid",
+            "initial_cash": 40000.0,
+            "currency": "CNY",
+            "market": "CN_A",
             "commission_rate": 0.0003,
             "min_commission": 0.0,
             "stamp_duty_rate": 0.0,
             "auto_reverse_repo_enabled": False,
-        },
-    )
+        })
+        print(f"Bootstrapped paper account {GRID_ACCOUNT_ID} with CNY 40000", flush=True)
+    trading.update_account(GRID_ACCOUNT_ID, {
+        "commission_rate": 0.0003,
+        "min_commission": 0.0,
+        "stamp_duty_rate": 0.0,
+        "auto_reverse_repo_enabled": False,
+    })
 
 
 def _bootstrap_confirmed_grid_history() -> None:
     trading = server.AuditRequestHandler.trading
     audit = server.AuditRequestHandler.store
-
-    existing = audit.list_events(
-        {
-            "event_type": "trade_filled",
-            "account_id": GRID_ACCOUNT_ID,
-            "symbol": GRID_SYMBOL,
-            "limit": 100000,
-        }
-    )
+    existing = audit.list_events({"event_type": "trade_filled", "account_id": GRID_ACCOUNT_ID, "symbol": GRID_SYMBOL, "limit": 100000})
     if existing:
         print(f"588000 history already present ({len(existing)} fills); bootstrap skipped", flush=True)
         return
-
-    # Use the local fixture only for the historical-price sanity guard so startup
-    # never blocks on TongDaXin server discovery. The actual trade prices below
-    # are the confirmed historical prices supplied by the user.
     fills = [
-        {
-            "account_id": GRID_ACCOUNT_ID,
-            "symbol": GRID_SYMBOL,
-            "side": "BUY",
-            "quantity": 11700,
-            "price": 1.708,
-            "trade_date": "2026-09-03",
-            "trade_time": "09:52:55",
-            "data_source": "fixture",
-            "apply_fees": True,
-            "note": "Initial/base position from confirmed source screenshot",
-        },
-        {
-            "account_id": GRID_ACCOUNT_ID,
-            "symbol": GRID_SYMBOL,
-            "side": "BUY",
-            "quantity": 1700,
-            "price": 1.668,
-            "trade_date": "2026-09-04",
-            "trade_time": "14:29:46",
-            "data_source": "fixture",
-            "apply_fees": True,
-            "note": "Grid add from confirmed source screenshot",
-        },
-        {
-            "account_id": GRID_ACCOUNT_ID,
-            "symbol": GRID_SYMBOL,
-            "side": "SELL",
-            "quantity": 1700,
-            "price": 1.708,
-            "trade_date": "2026-09-07",
-            "trade_time": "13:30:00",
-            "data_source": "fixture",
-            "apply_fees": True,
-            "note": "Grid sell from confirmed source screenshot; sell fee modeled at configured 0.03% because screenshot showed pending fee",
-        },
+        {"account_id": GRID_ACCOUNT_ID, "symbol": GRID_SYMBOL, "side": "BUY", "quantity": 11700, "price": 1.708, "trade_date": "2026-09-03", "trade_time": "09:52:55", "data_source": "fixture", "apply_fees": True, "note": "Initial/base position from confirmed source screenshot"},
+        {"account_id": GRID_ACCOUNT_ID, "symbol": GRID_SYMBOL, "side": "BUY", "quantity": 1700, "price": 1.668, "trade_date": "2026-09-04", "trade_time": "14:29:46", "data_source": "fixture", "apply_fees": True, "note": "Grid add from confirmed source screenshot"},
+        {"account_id": GRID_ACCOUNT_ID, "symbol": GRID_SYMBOL, "side": "SELL", "quantity": 1700, "price": 1.708, "trade_date": "2026-09-07", "trade_time": "13:30:00", "data_source": "fixture", "apply_fees": True, "note": "Grid sell from confirmed source screenshot"},
     ]
-
     results = [trading.backfill_trade(fill) for fill in fills]
-    print(
-        "Backfilled confirmed 588000 simulation history: "
-        + "; ".join(
-            f"{r['side']} {r['quantity']}@{r['price']} fee={r['costs']['commission']} cash={r['cash_after']} pos={r['position_after']}"
-            for r in results
-        ),
-        flush=True,
-    )
+    print("Backfilled confirmed 588000 simulation history: " + "; ".join(f"{r['side']} {r['quantity']}@{r['price']}" for r in results), flush=True)
 
 
 if __name__ == "__main__":
