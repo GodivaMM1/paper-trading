@@ -33,5 +33,31 @@ def _cloud_guard_remote(self) -> bool:
 server.AuditRequestHandler._guard_remote = _cloud_guard_remote
 
 
+# Idempotent bootstrap for the dedicated 588000 grid simulation account.
+# The stable account id prevents duplicate accounts on Railway redeploys.
+GRID_ACCOUNT_ID = "acct_588000_grid"
+
+
+def _bootstrap_grid_account() -> None:
+    trading = server.AuditRequestHandler.trading
+    if trading.get_account(GRID_ACCOUNT_ID):
+        return
+    trading.create_account(
+        {
+            "id": GRID_ACCOUNT_ID,
+            "name": "588000 Grid",
+            "owner": "588000-grid",
+            "initial_cash": 40000.0,
+            "currency": "CNY",
+            "market": "CN_A",
+            # 588000 is an ETF, so stock stamp duty should not be charged.
+            "stamp_duty_rate": 0.0,
+            "auto_reverse_repo_enabled": False,
+        }
+    )
+    print(f"Bootstrapped paper account {GRID_ACCOUNT_ID} with CNY 40000", flush=True)
+
+
 if __name__ == "__main__":
+    _bootstrap_grid_account()
     server.run()
