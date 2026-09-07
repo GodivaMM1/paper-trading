@@ -123,6 +123,9 @@ def _bootstrap_confirmed_grid_history() -> None:
         print(f"588000 history already present ({len(existing)} fills); bootstrap skipped", flush=True)
         return
 
+    # Use the local fixture only for the historical-price sanity guard so startup
+    # never blocks on TongDaXin server discovery. The actual trade prices below
+    # are the confirmed historical prices supplied by the user.
     fills = [
         {
             "account_id": GRID_ACCOUNT_ID,
@@ -132,6 +135,7 @@ def _bootstrap_confirmed_grid_history() -> None:
             "price": 1.708,
             "trade_date": "2026-09-03",
             "trade_time": "09:52:55",
+            "data_source": "fixture",
             "apply_fees": True,
             "note": "Initial/base position from confirmed source screenshot",
         },
@@ -143,6 +147,7 @@ def _bootstrap_confirmed_grid_history() -> None:
             "price": 1.668,
             "trade_date": "2026-09-04",
             "trade_time": "14:29:46",
+            "data_source": "fixture",
             "apply_fees": True,
             "note": "Grid add from confirmed source screenshot",
         },
@@ -154,6 +159,7 @@ def _bootstrap_confirmed_grid_history() -> None:
             "price": 1.708,
             "trade_date": "2026-09-07",
             "trade_time": "13:30:00",
+            "data_source": "fixture",
             "apply_fees": True,
             "note": "Grid sell from confirmed source screenshot; sell fee modeled at configured 0.03% because screenshot showed pending fee",
         },
