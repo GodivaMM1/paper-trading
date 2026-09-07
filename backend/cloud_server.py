@@ -115,6 +115,10 @@ def _cloud_do_get(self) -> None:
 
 server.AuditRequestHandler.do_GET = _cloud_do_get
 
+# Project records share the existing persistent database; no trades are created here.
+from backend.project_api import install as install_project_api
+install_project_api(server.AuditRequestHandler, server.DB_PATH)
+
 
 def _bootstrap_grid_account() -> None:
     trading = server.AuditRequestHandler.trading
