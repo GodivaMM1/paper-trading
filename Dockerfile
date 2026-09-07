@@ -9,4 +9,4 @@ COPY . .
 
 ENV HOST=0.0.0.0
 
-CMD ["python", "-m", "backend.server"]
+CMD ["python", "-m", "backend.cloud_server"]
