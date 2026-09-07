@@ -96,8 +96,6 @@ def _bootstrap_grid_account() -> None:
         )
         print(f"Bootstrapped paper account {GRID_ACCOUNT_ID} with CNY 40000", flush=True)
 
-    # Match the confirmed source screenshot: 0.03% commission with no minimum;
-    # 588000 is an ETF, so no stock stamp duty. This affects only future/backfilled fills.
     trading.update_account(
         GRID_ACCOUNT_ID,
         {
@@ -113,7 +111,6 @@ def _bootstrap_confirmed_grid_history() -> None:
     trading = server.AuditRequestHandler.trading
     audit = server.AuditRequestHandler.store
 
-    # Safety/idempotency: never add this bootstrap set if any valid 588000 fill already exists.
     existing = audit.list_events(
         {
             "event_type": "trade_filled",
@@ -133,7 +130,8 @@ def _bootstrap_confirmed_grid_history() -> None:
             "side": "BUY",
             "quantity": 11700,
             "price": 1.708,
-            "timestamp": "2026-09-03T09:52:55+08:00",
+            "trade_date": "2026-09-03",
+            "trade_time": "09:52:55",
             "apply_fees": True,
             "note": "Initial/base position from confirmed source screenshot",
         },
@@ -143,7 +141,8 @@ def _bootstrap_confirmed_grid_history() -> None:
             "side": "BUY",
             "quantity": 1700,
             "price": 1.668,
-            "timestamp": "2026-09-04T14:29:46+08:00",
+            "trade_date": "2026-09-04",
+            "trade_time": "14:29:46",
             "apply_fees": True,
             "note": "Grid add from confirmed source screenshot",
         },
@@ -153,7 +152,8 @@ def _bootstrap_confirmed_grid_history() -> None:
             "side": "SELL",
             "quantity": 1700,
             "price": 1.708,
-            "timestamp": "2026-09-07T13:30:00+08:00",
+            "trade_date": "2026-09-07",
+            "trade_time": "13:30:00",
             "apply_fees": True,
             "note": "Grid sell from confirmed source screenshot; sell fee modeled at configured 0.03% because screenshot showed pending fee",
         },
