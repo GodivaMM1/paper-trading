@@ -8,7 +8,6 @@ from backend import server
 
 
 # Prefer a stable Railway-provided token for remote API access.
-# If it is not configured, fall back to the project's original persisted token.
 _original_node_token = admin_link.node_token
 
 
@@ -20,7 +19,7 @@ def _cloud_node_token() -> str:
 admin_link.node_token = _cloud_node_token
 
 
-# Keep only the health endpoint public so a browser can verify the service is alive.
+# Keep only the health endpoint public.
 _original_guard_remote = server.AuditRequestHandler._guard_remote
 
 
@@ -32,32 +31,105 @@ def _cloud_guard_remote(self) -> bool:
 
 server.AuditRequestHandler._guard_remote = _cloud_guard_remote
 
-
-# Idempotent bootstrap for the dedicated 588000 grid simulation account.
-# The stable account id prevents duplicate accounts on Railway redeploys.
 GRID_ACCOUNT_ID = "acct_588000_grid"
+GRID_SYMBOL = "588000.SH"
 
 
 def _bootstrap_grid_account() -> None:
     trading = server.AuditRequestHandler.trading
-    if trading.get_account(GRID_ACCOUNT_ID):
-        return
-    trading.create_account(
+    account = trading.get_account(GRID_ACCOUNT_ID)
+    if not account:
+        account = trading.create_account(
+            {
+                "id": GRID_ACCOUNT_ID,
+                "name": "588000 Grid",
+                "owner": "588000-grid",
+                "initial_cash": 40000.0,
+                "currency": "CNY",
+                "market": "CN_A",
+                "commission_rate": 0.0003,
+                "min_commission": 0.0,
+                "stamp_duty_rate": 0.0,
+                "auto_reverse_repo_enabled": False,
+            }
+        )
+        print(f"Bootstrapped paper account {GRID_ACCOUNT_ID} with CNY 40000", flush=True)
+
+    # Match the confirmed source screenshot: 0.03% commission with no minimum;
+    # 588000 is an ETF, so no stock stamp duty. This affects only future/backfilled fills.
+    trading.update_account(
+        GRID_ACCOUNT_ID,
         {
-            "id": GRID_ACCOUNT_ID,
-            "name": "588000 Grid",
-            "owner": "588000-grid",
-            "initial_cash": 40000.0,
-            "currency": "CNY",
-            "market": "CN_A",
-            # 588000 is an ETF, so stock stamp duty should not be charged.
+            "commission_rate": 0.0003,
+            "min_commission": 0.0,
             "stamp_duty_rate": 0.0,
             "auto_reverse_repo_enabled": False,
+        },
+    )
+
+
+def _bootstrap_confirmed_grid_history() -> None:
+    trading = server.AuditRequestHandler.trading
+    audit = server.AuditRequestHandler.store
+
+    # Safety/idempotency: never add this bootstrap set if any valid 588000 fill already exists.
+    existing = audit.list_events(
+        {
+            "event_type": "trade_filled",
+            "account_id": GRID_ACCOUNT_ID,
+            "symbol": GRID_SYMBOL,
+            "limit": 100000,
         }
     )
-    print(f"Bootstrapped paper account {GRID_ACCOUNT_ID} with CNY 40000", flush=True)
+    if existing:
+        print(f"588000 history already present ({len(existing)} fills); bootstrap skipped", flush=True)
+        return
+
+    fills = [
+        {
+            "account_id": GRID_ACCOUNT_ID,
+            "symbol": GRID_SYMBOL,
+            "side": "BUY",
+            "quantity": 11700,
+            "price": 1.708,
+            "timestamp": "2026-09-03T09:52:55+08:00",
+            "apply_fees": True,
+            "note": "Initial/base position from confirmed source screenshot",
+        },
+        {
+            "account_id": GRID_ACCOUNT_ID,
+            "symbol": GRID_SYMBOL,
+            "side": "BUY",
+            "quantity": 1700,
+            "price": 1.668,
+            "timestamp": "2026-09-04T14:29:46+08:00",
+            "apply_fees": True,
+            "note": "Grid add from confirmed source screenshot",
+        },
+        {
+            "account_id": GRID_ACCOUNT_ID,
+            "symbol": GRID_SYMBOL,
+            "side": "SELL",
+            "quantity": 1700,
+            "price": 1.708,
+            "timestamp": "2026-09-07T13:30:00+08:00",
+            "apply_fees": True,
+            "note": "Grid sell from confirmed source screenshot; sell fee modeled at configured 0.03% because screenshot showed pending fee",
+        },
+    ]
+
+    results = [trading.backfill_trade(fill) for fill in fills]
+    print(
+        "Backfilled confirmed 588000 simulation history: "
+        + "; ".join(
+            f"{r['side']} {r['quantity']}@{r['price']} fee={r['costs']['commission']} cash={r['cash_after']} pos={r['position_after']}"
+            for r in results
+        ),
+        flush=True,
+    )
 
 
 if __name__ == "__main__":
     _bootstrap_grid_account()
+    _bootstrap_confirmed_grid_history()
     server.run()
