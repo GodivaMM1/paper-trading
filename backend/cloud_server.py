@@ -197,6 +197,8 @@ def _bootstrap_confirmed_grid_history() -> None:
 
 
 if __name__ == "__main__":
+    from backend.mcp_bridge import install as install_mcp_bridge
+    install_mcp_bridge(server.AuditRequestHandler, server.DB_PATH)
     _bootstrap_grid_account()
     _bootstrap_confirmed_grid_history()
     server.run()
