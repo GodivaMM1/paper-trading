@@ -73,8 +73,10 @@ Enable Developer mode in ChatGPT on the web. Create a developer-mode app:
 - Client registration: dynamic (DCR); leave optional preconfigured client fields
   blank. The GitHub OAuth App credentials belong in Railway, not these client fields.
 
-Approve the MCP consent page, then log into GitHub as GodivaMM1 and authorize the
-OAuth App. Only exact approved ChatGPT callback patterns are allowed by the server.
+Log into GitHub as GodivaMM1 and authorize the OAuth App. The separate FastMCP
+consent form is disabled because GitHub already presents authorization and every
+tool independently enforces the numeric owner ID; this also avoids cross-browser
+cookie mismatches. Only exact approved ChatGPT callback patterns are allowed by the server.
 An unrelated redirect URI is rejected. If the product shows a different callback,
 inspect it before changing the allowlist; do not allow all callback domains.
 

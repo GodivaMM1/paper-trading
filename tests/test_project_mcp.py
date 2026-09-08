@@ -67,7 +67,7 @@ class MCPTests(unittest.TestCase):
             })
             self.assertEqual(bad.status_code, 400)
 
-    def test_registration_and_consent_survive_provider_recreation(self):
+    def test_registration_survives_provider_recreation_without_extra_consent(self):
         app = self.mcp.http_app(path='/mcp', json_response=True, stateless_http=True)
         redirect = 'https://chatgpt.com/connector_platform_oauth_redirect'
         with TestClient(app, base_url='https://example.test') as client:
@@ -88,10 +88,8 @@ class MCPTests(unittest.TestCase):
                 'resource': 'https://example.test/mcp',
             }, follow_redirects=False)
             self.assertIn(result.status_code, (302, 303, 307), result.text)
-            self.assertIn('/consent', result.headers['location'])
-            consent = client.get(result.headers['location'])
-            self.assertEqual(consent.status_code, 200)
-            self.assertIn('Setup test', consent.text)
+            self.assertIn('github.com/login/oauth/authorize', result.headers['location'])
+            self.assertNotIn('/consent', result.headers['location'])
 
     def test_real_loopback_proxy_and_legacy_fallback(self):
         import http.client
