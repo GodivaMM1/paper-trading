@@ -3,9 +3,12 @@
 ## What this adds
 
 An owner-only FastMCP 3.4.7 server, using the library's GitHub OAuth provider.
-Three tools: `get_project_context`, `list_project_records`,
-`append_project_record`. No trading, repo-editing, deployment or automatic
-skill-promotion tool is exposed. The record-writing tool is marked as a write.
+Five tools: `get_project_context`, `list_project_records`,
+`append_project_record`, `record_confirmed_fill`, and `evaluate_grid`.
+The fill tool only appends an explicitly confirmed fill to the fixed 588000 paper
+account; it cannot reach a live broker. The evaluation tool fetches delayed market
+data and returns guardrail signals without trading or changing the strategy.
+No repo-editing, deployment or automatic skill-promotion tool is exposed.
 
 The existing HTTP service proxies only MCP/OAuth paths to a loopback-only ASGI
 worker in the same container. Other API routes retain their original authentication
@@ -77,11 +80,19 @@ inspect it before changing the allowlist; do not allow all callback domains.
 
 ## 5. Acceptance
 
-Discover exactly the three tools. Read context without creating trades. Write a
+Discover exactly the five tools. Read context without creating trades. Write a
 clearly labeled non-financial setup-test note with a unique idempotency key. Read
 the returned ID; retry the identical write and confirm `created=false`. Verify in
 a fresh chat and again after a controlled redeployment. These production checks
 require the real account authorization and have not yet been performed.
+
+For fill acceptance, extract screenshot fields first, show them to the user, and
+call `record_confirmed_fill` only after explicit confirmation. Use a deterministic
+idempotency key. The server rejects an obvious existing fill and locks failed or
+ambiguous requests for inspection. For grid evaluation, first store one confirmed
+`strategy` record with `content.grid_config` containing: `lower_price`,
+`upper_price`, `reference_price`, `spacing_pct`, `order_quantity`, `min_position`,
+and `max_position`. Missing values are reported rather than invented.
 
 Test results before submission: 7 local MCP/auth/proxy tests pass, including owner
 denial and read/write with mocked upstream identity, metadata discovery, redirect
