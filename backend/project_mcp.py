@@ -81,7 +81,11 @@ def build_mcp(handler, db_path):
             'https://chatgpt.com/connector/oauth/*',
         ],
         jwt_signing_key=signing, client_storage=storage,
-        require_authorization_consent=True,
+        # GitHub already presents the owner with an authorization screen, and
+        # every MCP tool independently enforces the numeric owner id. Avoid a
+        # second cookie-based consent form, which is fragile across mobile and
+        # desktop browser handoffs.
+        require_authorization_consent=False,
         fastmcp_access_token_expiry_seconds=3600,
         fallback_refresh_token_expiry_seconds=30 * 24 * 3600,
         # DCR is sufficient for the first integration, avoiding dynamic URL clients.
