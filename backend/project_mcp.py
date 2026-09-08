@@ -21,6 +21,7 @@ from key_value.aio.wrappers.encryption import FernetEncryptionWrapper
 
 from backend.project_memory import ProjectMemory
 from backend.project_api import project_context
+from backend.project_grid import ConfirmedFillRecorder, evaluate_grid as evaluate_grid_state
 
 
 class OwnerGitHubProvider(GitHubProvider):
@@ -89,6 +90,7 @@ def build_mcp(handler, db_path):
     mcp = FastMCP('模拟投资研究账本', auth=auth,
                  instructions='Read project context before analysis. Record evidence and distinguish proposals from executions. Learning records are candidates, never automatic trading rules.')
     memory = ProjectMemory(db_path)
+    fill_recorder = ConfirmedFillRecorder(db_path, handler)
 
     def require_owner():
         token = get_access_token()
@@ -120,5 +122,25 @@ def build_mcp(handler, db_path):
         except ValueError as exc:
             raise ToolError(str(exc)) from exc
         return {'record': saved, 'created': created}
+
+    @mcp.tool(annotations={'readOnlyHint': False, 'destructiveHint': False,
+                           'idempotentHint': True, 'openWorldHint': False})
+    def record_confirmed_fill(fill: dict) -> dict:
+        """Record one explicitly user-confirmed 588000.SH paper fill and update cash/position. Never call from an unconfirmed screenshot extraction. Required: user_confirmed=true, side BUY/SELL, positive quantity and price, trade_date YYYY-MM-DD, source, and a deterministic idempotency_key. Optional: trade_time HH:MM:SS, apply_fees (default true), note. The target is fixed to acct_588000_grid and this cannot place a live brokerage order."""
+        require_owner()
+        try:
+            return fill_recorder.record(fill)
+        except ValueError as exc:
+            raise ToolError(str(exc)) from exc
+
+    @mcp.tool(annotations={'readOnlyHint': True, 'destructiveHint': False,
+                           'openWorldHint': True})
+    def evaluate_grid(grid_config: dict | None = None) -> dict:
+        """Fetch the latest delayed 588000 quote and 20-session history, combine them with the paper account, and evaluate grid guardrails. Uses the latest active strategy record's content.grid_config when no config is supplied. Required config fields are lower_price, upper_price, reference_price, spacing_pct, order_quantity, min_position, max_position. Returns signals only and never trades or changes strategy."""
+        require_owner()
+        try:
+            return evaluate_grid_state(handler, memory, grid_config)
+        except (ValueError, RuntimeError) as exc:
+            raise ToolError(str(exc)) from exc
 
     return mcp

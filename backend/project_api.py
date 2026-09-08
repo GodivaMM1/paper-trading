@@ -91,5 +91,7 @@ def project_context(handler, memory):
                     },
                     'capabilities': {'record_memory': True, 'record_decision': True,
                                      'record_review': True, 'candidate_learning': True,
-                                     'automatic_evaluation': False, 'automatic_skill_promotion': False},
+                                     'record_confirmed_paper_fill': True,
+                                     'grid_evaluation': True,
+                                     'automatic_skill_promotion': False},
                 }
