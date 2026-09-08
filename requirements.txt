@@ -4,3 +4,5 @@ rqdatac
 pymysql
 pywebview
 pyinstaller
+
+fastmcp==3.4.7

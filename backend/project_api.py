@@ -36,29 +36,7 @@ def install(handler, db_path):
                 query = parse_qs(parsed.query)
                 return self._json(memory.list(query.get('after', ['0'])[-1], query.get('limit', ['100'])[-1]))
             if parsed.path == PREFIX + 'context':
-                account_id = 'acct_588000_grid'
-                account = self.trading.get_account(account_id)
-                records = memory.current()
-                self._json({
-                    'schema_version': 1, 'project_id': 'simulation-investing',
-                    'retrieved_at': datetime.now(timezone.utc).isoformat(),
-                    'account_type': 'paper', 'account': account,
-                    'positions': self.trading.list_positions(account_id) if account else [],
-                    'recent_trade_events': self.store.list_events({
-                        'account_id': account_id, 'event_type': 'trade_filled', 'limit': 50}),
-                    'active_records': records,
-                    'market_quote': None,
-                    'data_quality': {
-                        'account_available': account is not None,
-                        'historical_screenshot_provenance': 'not_reverified_by_project_memory',
-                        'quote_status': 'not_fetched',
-                        'strategy_status': 'recorded_notes_only_not_execution_configuration',
-                        'recent_trade_limit': 50,
-                    },
-                    'capabilities': {'record_memory': True, 'record_decision': True,
-                                     'record_review': True, 'candidate_learning': True,
-                                     'automatic_evaluation': False, 'automatic_skill_promotion': False},
-                })
+                self._json(project_context(self, memory))
                 return
             self._json({'error': 'not found'}, 404)
         except ValueError as exc:
@@ -89,3 +67,29 @@ def install(handler, db_path):
             self._json({'error': 'project write failed'}, 500)
 
     handler.do_GET, handler.do_POST = get, post
+
+
+def project_context(handler, memory):
+    account_id = 'acct_588000_grid'
+    account = handler.trading.get_account(account_id)
+    records = memory.current()
+    return {
+                    'schema_version': 1, 'project_id': 'simulation-investing',
+                    'retrieved_at': datetime.now(timezone.utc).isoformat(),
+                    'account_type': 'paper', 'account': account,
+                    'positions': handler.trading.list_positions(account_id) if account else [],
+                    'recent_trade_events': handler.store.list_events({
+                        'account_id': account_id, 'event_type': 'trade_filled', 'limit': 50}),
+                    'active_records': records,
+                    'market_quote': None,
+                    'data_quality': {
+                        'account_available': account is not None,
+                        'historical_screenshot_provenance': 'not_reverified_by_project_memory',
+                        'quote_status': 'not_fetched',
+                        'strategy_status': 'recorded_notes_only_not_execution_configuration',
+                        'recent_trade_limit': 50,
+                    },
+                    'capabilities': {'record_memory': True, 'record_decision': True,
+                                     'record_review': True, 'candidate_learning': True,
+                                     'automatic_evaluation': False, 'automatic_skill_promotion': False},
+                }

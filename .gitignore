@@ -21,3 +21,6 @@ outputs/
 **/connector_settings.json
 *.secret
 .env
+
+# Encrypted OAuth state and signing material remain on the persistent volume.
+data/mcp_oauth/
