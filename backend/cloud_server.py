@@ -115,8 +115,11 @@ def _cloud_do_get(self) -> None:
 
 server.AuditRequestHandler.do_GET = _cloud_do_get
 
-# Project records share the existing persistent database; no trades are created here.
+# Project records share the existing persistent database. User-confirmed fills are
+# reconciled into the paper ledger at startup; ordinary research notes never trade.
 from backend.project_api import install as install_project_api
+from backend.project_grid import reconcile_confirmed_grid_fills
+from backend.project_memory import ProjectMemory
 install_project_api(server.AuditRequestHandler, server.DB_PATH)
 
 
@@ -172,28 +175,48 @@ def _bootstrap_confirmed_grid_history() -> None:
         return False
 
     missing = [fill for fill in fills if not _already_present(fill)]
-    if not missing:
-        print(f"588000 confirmed history complete ({len(existing)} fills); bootstrap skipped", flush=True)
-        return
+    if missing:
+        # These are user-confirmed broker screenshot fills. Avoid connector-dependent
+        # price sanity probes during startup; the screenshot itself is the source of truth.
+        original_price_guard = trading._guard_price_sanity
+        trading._guard_price_sanity = lambda *args, **kwargs: None
+        try:
+            results = []
+            for fill in missing:
+                result = trading.backfill_trade(fill)
+                results.append(result)
+                existing.append({
+                    "timestamp": result["timestamp"],
+                    "quantity": result["quantity"],
+                    "price": result["price"],
+                    "metadata": {"side": result["side"]},
+                })
+            print("Repaired seed 588000 history: " + "; ".join(f"{r['side']} {r['quantity']}@{r['price']}" for r in results), flush=True)
+        finally:
+            trading._guard_price_sanity = original_price_guard
+    else:
+        print(f"588000 seed history complete ({len(existing)} fills)", flush=True)
 
-    # These are user-confirmed broker screenshot fills. Avoid connector-dependent
-    # price sanity probes during startup; the screenshot itself is the source of truth.
-    original_price_guard = trading._guard_price_sanity
-    trading._guard_price_sanity = lambda *args, **kwargs: None
-    try:
-        results = []
-        for fill in missing:
-            result = trading.backfill_trade(fill)
-            results.append(result)
-            existing.append({
-                "timestamp": result["timestamp"],
-                "quantity": result["quantity"],
-                "price": result["price"],
-                "metadata": {"side": result["side"]},
-            })
-        print("Repaired confirmed 588000 history: " + "; ".join(f"{r['side']} {r['quantity']}@{r['price']}" for r in results), flush=True)
-    finally:
-        trading._guard_price_sanity = original_price_guard
+    memory = ProjectMemory(server.DB_PATH)
+    sync = reconcile_confirmed_grid_fills(server.AuditRequestHandler, memory)
+    if sync["repaired_count"]:
+        print(
+            "Reconciled project-confirmed 588000 fills: "
+            + "; ".join(
+                f"{item['side']} {item['quantity']}@{item['price']} {item['timestamp']}"
+                for item in sync["repaired"]
+            ),
+            flush=True,
+        )
+    if sync["errors"]:
+        print(f"588000 reconciliation errors: {sync['errors']}", flush=True)
+    if sync["missing_after"]:
+        print(f"588000 reconciliation still missing {sync['missing_after']} confirmed fills", flush=True)
+    else:
+        print(
+            f"588000 confirmed-fill reconciliation complete ({sync['matched_fill_count']} project fills matched)",
+            flush=True,
+        )
 
 
 if __name__ == "__main__":
