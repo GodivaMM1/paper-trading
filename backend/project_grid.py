@@ -3,8 +3,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
 
@@ -131,6 +132,175 @@ class ConfirmedFillRecorder:
                 and abs(float(event.get("price") or 0) - float(payload["price"])) < 1e-9
             ):
                 raise ValueError("an identical fill already exists in the ledger; no duplicate was written")
+
+
+_FILLED_STATUSES = {"filled", "成交", "已成", "已成交"}
+_SHANGHAI_TZ = timezone(timedelta(hours=8))
+
+
+def _fill_key(fill: dict[str, Any]) -> tuple[str, str, int, float]:
+    return (
+        f"{fill['trade_date']}T{fill['trade_time']}",
+        str(fill["side"]).upper(),
+        int(fill["quantity"]),
+        round(float(fill["price"]), 8),
+    )
+
+
+def confirmed_grid_fills_from_records(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Extract only explicit user-confirmed 588000 fills from research memory."""
+    fills: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, int, float]] = set()
+    for record in records:
+        if record.get("verification") != "user_confirmed":
+            continue
+        content = record.get("content") or {}
+        candidates: list[dict[str, Any]] = []
+        for field in ("fill", "fills", "confirmed_fills"):
+            value = content.get(field)
+            if isinstance(value, dict):
+                candidates.append(value)
+            elif isinstance(value, list):
+                candidates.extend(item for item in value if isinstance(item, dict))
+        for item in candidates:
+            if str(item.get("symbol") or "").upper() != SYMBOL:
+                continue
+            if str(item.get("status") or "").strip().lower() not in _FILLED_STATUSES:
+                continue
+            side = str(item.get("side") or "").strip().upper()
+            if side not in {"BUY", "SELL"}:
+                continue
+            try:
+                quantity = int(item.get("quantity"))
+                price = float(item.get("price"))
+            except (TypeError, ValueError):
+                continue
+            if quantity <= 0 or quantity % 100 != 0 or not math.isfinite(price) or price <= 0:
+                continue
+            raw_time = item.get("time") or item.get("trade_time")
+            if not isinstance(raw_time, str) or not raw_time.strip():
+                continue
+            try:
+                when = datetime.fromisoformat(raw_time.strip().replace("Z", "+00:00"))
+            except ValueError:
+                continue
+            if when.utcoffset() is None:
+                continue
+            when = when.astimezone(_SHANGHAI_TZ)
+            fill = {
+                "account_id": ACCOUNT_ID,
+                "symbol": SYMBOL,
+                "side": side,
+                "quantity": quantity,
+                "price": price,
+                "trade_date": when.date().isoformat(),
+                "trade_time": when.strftime("%H:%M:%S"),
+                "apply_fees": True,
+                "note": f"User-confirmed fill reconciled from project record {record.get('id', 'unknown')}",
+                "source_record_id": record.get("id"),
+            }
+            key = _fill_key(fill)
+            if key in seen:
+                continue
+            seen.add(key)
+            fills.append(fill)
+    fills.sort(key=lambda item: (item["trade_date"], item["trade_time"], item["side"], item["price"]))
+    return fills
+
+
+def _ledger_fill_keys(handler: Any) -> set[tuple[str, str, int, float]]:
+    events = handler.store.list_events(
+        {"event_type": "trade_filled", "account_id": ACCOUNT_ID, "symbol": SYMBOL, "limit": 100000}
+    )
+    keys: set[tuple[str, str, int, float]] = set()
+    for event in events:
+        timestamp = str(event.get("timestamp") or "")
+        metadata = event.get("metadata") or {}
+        side = str(metadata.get("side") or event.get("side") or "").upper()
+        if len(timestamp) < 19 or side not in {"BUY", "SELL"}:
+            continue
+        try:
+            keys.add((
+                timestamp[:19],
+                side,
+                int(event.get("quantity") or 0),
+                round(float(event.get("price") or 0), 8),
+            ))
+        except (TypeError, ValueError):
+            continue
+    return keys
+
+
+def grid_fill_reconciliation(handler: Any, memory: Any) -> dict[str, Any]:
+    """Read-only comparison between confirmed research fills and the trade ledger."""
+    fills = confirmed_grid_fills_from_records(memory.current())
+    ledger_keys = _ledger_fill_keys(handler)
+    missing = [fill for fill in fills if _fill_key(fill) not in ledger_keys]
+    return {
+        "confirmed_fill_count": len(fills),
+        "matched_fill_count": len(fills) - len(missing),
+        "missing_fill_count": len(missing),
+        "missing_fills": [
+            {
+                "source_record_id": fill.get("source_record_id"),
+                "side": fill["side"],
+                "quantity": fill["quantity"],
+                "price": fill["price"],
+                "trade_date": fill["trade_date"],
+                "trade_time": fill["trade_time"],
+            }
+            for fill in missing
+        ],
+    }
+
+
+def reconcile_confirmed_grid_fills(handler: Any, memory: Any) -> dict[str, Any]:
+    """Backfill only missing, explicitly user-confirmed fills, preserving audit history."""
+    state = grid_fill_reconciliation(handler, memory)
+    missing = confirmed_grid_fills_from_records(memory.current())
+    ledger_keys = _ledger_fill_keys(handler)
+    missing = [fill for fill in missing if _fill_key(fill) not in ledger_keys]
+    if not missing:
+        return {**state, "repaired_count": 0, "errors": [], "missing_after": 0}
+
+    trading = handler.trading
+    original_price_guard = getattr(trading, "_guard_price_sanity", None)
+    if original_price_guard is not None:
+        trading._guard_price_sanity = lambda *args, **kwargs: None
+    repaired: list[dict[str, Any]] = []
+    errors: list[dict[str, str]] = []
+    try:
+        for fill in missing:
+            payload = {key: value for key, value in fill.items() if key != "source_record_id"}
+            try:
+                result = trading.backfill_trade(payload)
+            except Exception as exc:
+                errors.append({
+                    "source_record_id": str(fill.get("source_record_id") or ""),
+                    "error": str(exc),
+                })
+                continue
+            repaired.append({
+                "source_record_id": fill.get("source_record_id"),
+                "side": result["side"],
+                "quantity": result["quantity"],
+                "price": result["price"],
+                "timestamp": result["timestamp"],
+            })
+            ledger_keys.add(_fill_key(fill))
+    finally:
+        if original_price_guard is not None:
+            trading._guard_price_sanity = original_price_guard
+
+    after = grid_fill_reconciliation(handler, memory)
+    return {
+        **after,
+        "missing_before": len(missing),
+        "repaired_count": len(repaired),
+        "repaired": repaired,
+        "errors": errors,
+        "missing_after": after["missing_fill_count"],
+    }
 
 
 def _latest_grid_config(records: list[dict[str, Any]]) -> dict[str, Any] | None:
