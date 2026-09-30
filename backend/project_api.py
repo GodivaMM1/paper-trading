@@ -70,9 +70,12 @@ def install(handler, db_path):
 
 
 def project_context(handler, memory):
+    from backend.project_grid import grid_fill_reconciliation
+
     account_id = 'acct_588000_grid'
     account = handler.trading.get_account(account_id)
     records = memory.current()
+    reconciliation = grid_fill_reconciliation(handler, memory)
     return {
                     'schema_version': 1, 'project_id': 'simulation-investing',
                     'retrieved_at': datetime.now(timezone.utc).isoformat(),
@@ -81,6 +84,7 @@ def project_context(handler, memory):
                     'recent_trade_events': handler.store.list_events({
                         'account_id': account_id, 'event_type': 'trade_filled', 'limit': 50}),
                     'active_records': records,
+                    'ledger_reconciliation': reconciliation,
                     'market_quote': None,
                     'data_quality': {
                         'account_available': account is not None,
