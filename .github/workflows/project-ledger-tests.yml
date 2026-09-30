@@ -1,0 +1,19 @@
+name: project-ledger-tests
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Install focused test dependencies
+        run: python -m pip install --upgrade pip fastmcp==3.4.7
+      - name: Run project ledger tests
+        run: python -m unittest tests.test_project_grid tests.test_project_memory tests.test_project_mcp -v

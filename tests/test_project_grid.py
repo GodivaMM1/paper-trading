@@ -3,24 +3,40 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
-from backend.project_grid import ConfirmedFillRecorder, evaluate_grid
+from backend.project_grid import (
+    ConfirmedFillRecorder,
+    confirmed_grid_fills_from_records,
+    evaluate_grid,
+    reconcile_confirmed_grid_fills,
+)
 
 
 class FakeTrading:
     def __init__(self):
         self.calls = []
+        self.store = None
+        self._guard_price_sanity = lambda *args, **kwargs: None
 
     def backfill_trade(self, payload):
         self.calls.append(payload)
-        return {
+        result = {
             "accepted": True,
             "symbol": payload["symbol"],
             "side": payload["side"],
             "quantity": int(payload["quantity"]),
             "price": float(payload["price"]),
+            "timestamp": f"{payload['trade_date']}T{payload['trade_time']}+08:00",
             "cash_after": 10000.0,
             "position_after": 12000,
         }
+        if self.store is not None:
+            self.store.events.append({
+                "timestamp": result["timestamp"],
+                "quantity": result["quantity"],
+                "price": result["price"],
+                "metadata": {"side": result["side"]},
+            })
+        return result
 
     def get_account(self, _):
         return {"cash": 10000.0, "initial_cash": 40000.0, "commission_rate": 0.0003}
@@ -44,6 +60,7 @@ class ProjectGridTests(unittest.TestCase):
         self.db = Path(self.temp.name) / "audit.sqlite3"
         self.trading = FakeTrading()
         self.store = FakeStore()
+        self.trading.store = self.store
         self.handler = SimpleNamespace(trading=self.trading, store=self.store)
 
     def fill(self, **updates):
@@ -89,6 +106,83 @@ class ProjectGridTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "identical fill"):
             recorder.record(self.fill())
         self.assertEqual(self.trading.calls, [])
+
+    def test_extracts_only_explicit_user_confirmed_grid_fills(self):
+        records = [
+            {
+                "id": "pr_a",
+                "verification": "user_confirmed",
+                "content": {
+                    "confirmed_fills": [
+                        {"symbol": "588000.SH", "side": "BUY", "quantity": 1700, "price": 1.641,
+                         "trade_time": "2026-09-11T09:30:07+08:00", "status": "已成"},
+                        {"symbol": "300747.SZ", "side": "BUY", "quantity": 100, "price": 41.06,
+                         "trade_time": "2026-09-10T09:33:10+08:00", "status": "已成"},
+                    ],
+                },
+            },
+            {
+                "id": "pr_b",
+                "verification": "user_confirmed",
+                "content": {
+                    "fills": [
+                        {"symbol": "588000.SH", "side": "SELL", "quantity": 1700, "price": 1.725,
+                         "time": "2026-09-18T09:30:05+08:00", "status": "filled"},
+                    ],
+                },
+            },
+            {
+                "id": "pr_c",
+                "verification": "source_checked",
+                "content": {
+                    "fill": {"symbol": "588000.SH", "side": "BUY", "quantity": 1700, "price": 1.648,
+                             "time": "2026-09-29T09:45:08+08:00", "status": "filled"},
+                },
+            },
+        ]
+        fills = confirmed_grid_fills_from_records(records)
+        self.assertEqual(len(fills), 2)
+        self.assertEqual([(f["trade_date"], f["trade_time"], f["side"]) for f in fills], [
+            ("2026-09-11", "09:30:07", "BUY"),
+            ("2026-09-18", "09:30:05", "SELL"),
+        ])
+
+    def test_reconciliation_backfills_missing_fills_once(self):
+        records = [
+            {
+                "id": "pr_1",
+                "verification": "user_confirmed",
+                "content": {
+                    "confirmed_fills": [
+                        {"symbol": "588000.SH", "side": "BUY", "quantity": 1700, "price": 1.641,
+                         "trade_time": "2026-09-11T09:30:07+08:00", "status": "已成"},
+                        {"symbol": "588000.SH", "side": "BUY", "quantity": 1700, "price": 1.607,
+                         "trade_time": "2026-09-11T10:41:00+08:00", "status": "已成"},
+                    ],
+                },
+            },
+            {
+                "id": "pr_2",
+                "verification": "user_confirmed",
+                "content": {
+                    "fills": [
+                        {"symbol": "588000.SH", "side": "SELL", "quantity": 1700, "price": 1.725,
+                         "time": "2026-09-18T09:30:05+08:00", "status": "filled"},
+                    ],
+                },
+            },
+        ]
+        memory = SimpleNamespace(current=lambda: records)
+        first = reconcile_confirmed_grid_fills(self.handler, memory)
+        self.assertEqual(first["repaired_count"], 3)
+        self.assertEqual(first["missing_after"], 0)
+        self.assertEqual([call["trade_time"] for call in self.trading.calls],
+                         ["09:30:07", "10:41:00", "09:30:05"])
+
+        second = reconcile_confirmed_grid_fills(self.handler, memory)
+        self.assertEqual(second["repaired_count"], 0)
+        self.assertEqual(second["missing_fill_count"], 0)
+        self.assertEqual(len(self.trading.calls), 3)
 
     def test_grid_requires_config_without_inventing_values(self):
         memory = SimpleNamespace(current=lambda: [])
